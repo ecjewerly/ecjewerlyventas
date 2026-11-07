@@ -1,5 +1,5 @@
 // Sube VERSION en cada cambio visible para que los celulares con la app instalada se actualicen.
-const VERSION = 'ecj-v0.8.1';
+const VERSION = 'ecj-v0.9.0';
 const ASSETS = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -11,6 +11,7 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const r = e.request;
   if (r.method !== 'GET') return;
+  if (new URL(r.url).pathname === '/api') return; // datos: siempre a la red
   if (r.mode === 'navigate') {
     // Red primero: así siempre llega la versión nueva
     e.respondWith(fetch(r).then(res => { caches.open(VERSION).then(c => c.put(r, res.clone())); return res; }).catch(() => caches.match(r).then(m => m || caches.match('index.html'))));

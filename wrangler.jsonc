@@ -1,5 +1,8 @@
 {
   "name": "ecjewerlyventas",
-  "compatibility_date": "2026-11-01",
-  "assets": { "directory": "./public" }
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-01",
+  "assets": { "directory": "./public", "binding": "ASSETS" },
+  "durable_objects": { "bindings": [{ "name": "DB", "class_name": "Datos" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Datos"] }]
 }
