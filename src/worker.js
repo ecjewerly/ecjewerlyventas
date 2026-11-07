@@ -84,6 +84,11 @@ export class Datos extends DurableObject {
   // lo que cada rol puede ver de un registro
   vista(rol, yoId, c, o) {
     if (rol === "admin") return o;
+    if (rol === "gerente") {
+      // El gerente ve todo (menos el PIN de otros gerentes); administra a los vendedores.
+      if (c === "vendedores" && o.rol === "gerente" && o.id !== yoId) { const { pin, ...r } = o; return r; }
+      return o;
+    }
     if (c === "vendedores") { const { pin, ...r } = o; return r; }
     if (c === "ventas" && o.vendedorId !== yoId) return minimo(o);
     return o;
@@ -123,7 +128,7 @@ export class Datos extends DurableObject {
   }
 
   lista() {
-    const v = this.vendedores().filter((x) => x.activo !== false).map((x) => ({ id: x.id, nombre: x.nombre }));
+    const v = this.vendedores().filter((x) => x.activo !== false).map((x) => ({ id: x.id, nombre: x.nombre, g: x.rol === "gerente" }));
     return J({ ok: true, claim: !this.get("adminPin"), vend: v });
   }
   claim(b) {
@@ -138,6 +143,7 @@ export class Datos extends DurableObject {
     const seg = this.bloqueo(k);
     if (seg) return J({ ok: false, e: "bloqueado", seg });
     let ok = false, me = { rol };
+    let rolReal = rol;
     if (rol === "admin") {
       const p = this.get("adminPin");
       if (!p) return J({ ok: false, e: "sin_admin" });
@@ -146,10 +152,11 @@ export class Datos extends DurableObject {
       const f = this.fila("vendedores", String(b.id || ""));
       ok = !!(f && f.o && f.o.activo !== false && String(b.pin) === f.o.pin);
       me.id = String(b.id || "");
+      if (ok && f.o.rol === "gerente") { rolReal = "gerente"; me.rol = "gerente"; }
     }
     if (!ok) { this.fallo(k); return J({ ok: false, e: "pin" }); }
     this.limpiarFallos(k);
-    return J({ ok: true, t: this.token(rol, me.id), me });
+    return J({ ok: true, t: this.token(rolReal, me.id), me });
   }
   adminpin(b) {
     const q = this.quien(b.t);
@@ -174,10 +181,17 @@ export class Datos extends DurableObject {
     if (!id) return { e: "id" };
     const cur = this.fila(c, id);
     const admin = q.rol === "admin";
+    const gerente = q.rol === "gerente";
+    const full = admin || gerente;
     const base = +it.b || 0;
 
     if (it.del) {
-      if (!admin) return { e: "permiso" };
+      if (!full) return { e: "permiso" };
+      if (gerente) {
+        // El gerente no borra pedidos ni a otros gerentes.
+        if (c === "ventas") return { e: "permiso" };
+        if (c === "vendedores" && cur && cur.o && cur.o.rol === "gerente") return { e: "permiso" };
+      }
       if (cur && cur.o) this.escribir(c, id, null);
       return null;
     }
@@ -185,7 +199,7 @@ export class Datos extends DurableObject {
     if (typeof o !== "object" || o === null) return { e: "datos" };
     o = { ...o, id };
 
-    if (!admin) {
+    if (!full) {
       if (c === "ventas") {
         if (o.vendedorId !== q.id) return { e: "permiso" };
         if (cur && cur.o) {
@@ -210,9 +224,23 @@ export class Datos extends DurableObject {
       if (c !== "piezas" && cur && cur.o && cur.s > base && JSON.stringify(cur.o) !== JSON.stringify(o)) return { e: "conflicto" };
       if (c === "vendedores") {
         if (!o.nombre || !PIN.test(String(o.pin))) return { e: "datos" };
-        if (o.pin === this.get("adminPin")) return { e: "en_uso" };
+        if (gerente) {
+          // Solo Paulo crea, edita o quita al gerente.
+          if (o.rol === "gerente" || (cur && cur.o && cur.o.rol === "gerente")) return { e: "permiso" };
+        }
+        if (o.rol !== "gerente") delete o.rol;
+        if (o.pin === this.get("adminPin")) {
+          // Para el gerente, un choque con el PIN de Paulo cuenta como intento fallido (no se puede adivinar).
+          if (gerente) {
+            const k = "gpin:" + q.id;
+            if (this.bloqueo(k)) return { e: "bloqueado" };
+            this.fallo(k);
+          }
+          return { e: "en_uso" };
+        }
         if (this.vendedores().some((v) => v.id !== id && v.pin === o.pin)) return { e: "en_uso" };
-        if (cur && cur.o && cur.o.pin !== o.pin) this.sql.exec("DELETE FROM ses WHERE rol='vendedor' AND id=?", id);
+        const cambio = cur && cur.o && (cur.o.pin !== o.pin || cur.o.rol !== o.rol || (o.activo === false && cur.o.activo !== false));
+        if (cambio) this.sql.exec("DELETE FROM ses WHERE rol IN ('vendedor','gerente') AND id=?", id);
       }
     }
     if (c === "piezas") o = this.guardarFoto(id, o);
@@ -222,9 +250,11 @@ export class Datos extends DurableObject {
   sync(b) {
     const q = this.quien(b.t);
     if (!q) return J({ ok: false, e: "auth" }, 401);
-    if (q.rol === "vendedor") {
+    if (q.rol === "vendedor" || q.rol === "gerente") {
       const f = this.fila("vendedores", q.id);
       if (!f || !f.o || f.o.activo === false) return J({ ok: false, e: "auth" }, 401);
+      // El rol sale siempre del registro actual (si Paulo lo cambia, aplica de inmediato).
+      q.rol = f.o.rol === "gerente" ? "gerente" : "vendedor";
     }
     const rej = [];
     const push = b.push || {};
