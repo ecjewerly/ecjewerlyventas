@@ -7,7 +7,9 @@ const J = (o, s = 200) => new Response(JSON.stringify(o), {
   status: s,
   headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
 });
-const COLS = ["ventas", "piezas", "vendedores", "bonos"];
+const COLS = ["ventas", "piezas", "vendedores", "bonos", "pos"];
+// Costos y existencias: solo Paulo los ve y los escribe (el gerente y los vendedores no).
+const INV = ["costo", "empaque", "envio", "comprado", "stockMin"];
 const PIN = /^\d{4}$/;
 const ESTADOS_PIEZA = ["disponible", "apartada", "agotada", "vendida", "borrador"];
 const DIAS = 86400000;
@@ -84,6 +86,8 @@ export class Datos extends DurableObject {
   // lo que cada rol puede ver de un registro
   vista(rol, yoId, c, o) {
     if (rol === "admin") return o;
+    if (c === "pos") return null; // el punto de venta es solo de Paulo
+    if (c === "piezas") { const r = { ...o }; for (const k of INV) delete r[k]; return r; }
     if (rol === "gerente") {
       // El gerente ve todo (menos el PIN de otros gerentes); administra a los vendedores.
       if (c === "vendedores" && o.rol === "gerente" && o.id !== yoId) { const { pin, ...r } = o; return r; }
@@ -184,6 +188,7 @@ export class Datos extends DurableObject {
     const gerente = q.rol === "gerente";
     const full = admin || gerente;
     const base = +it.b || 0;
+    if (c === "pos" && !admin) return { e: "permiso" };
 
     if (it.del) {
       if (!full) return { e: "permiso" };
@@ -221,6 +226,8 @@ export class Datos extends DurableObject {
         o = cur && cur.o ? { ...cur.o, estado: o.estado } : { id, estado: o.estado };
       } else return { e: "permiso" };
     } else {
+      // El gerente edita el catálogo pero no toca (ni ve) costos ni existencias: se conservan los de Paulo.
+      if (c === "piezas" && gerente) { for (const k of INV) { if (cur && cur.o && k in cur.o) o[k] = cur.o[k]; else delete o[k]; } }
       if (c !== "piezas" && cur && cur.o && cur.s > base && JSON.stringify(cur.o) !== JSON.stringify(o)) return { e: "conflicto" };
       if (c === "vendedores") {
         if (!o.nombre || !PIN.test(String(o.pin))) return { e: "datos" };
@@ -264,7 +271,7 @@ export class Datos extends DurableObject {
         if (r) {
           const id = String(it.r ? it.r.id : it.id || "");
           const cur = id && this.fila(c, id);
-          rej.push({ c, id, e: r.e, fix: cur ? (cur.o ? { s: cur.s, r: this.vista(q.rol, q.id, c, cur.o) } : { s: cur.s, del: true }) : null });
+          rej.push({ c, id, e: r.e, fix: cur && !(c === "pos" && q.rol !== "admin") ? (cur.o ? { s: cur.s, r: this.vista(q.rol, q.id, c, cur.o) } : { s: cur.s, del: true }) : null });
         }
       }
     }
@@ -275,8 +282,10 @@ export class Datos extends DurableObject {
     const ch = {}, del = {};
     for (const c of COLS) { ch[c] = []; del[c] = []; }
     for (const r of this.sql.exec("SELECT c,id,s,j FROM reg WHERE s>? ORDER BY s", since).toArray()) {
+      if (r.c === "pos" && q.rol !== "admin") continue;
       if (r.j === null) { del[r.c].push(r.id); continue; }
-      ch[r.c].push({ s: r.s, r: this.vista(q.rol, q.id, r.c, JSON.parse(r.j)) });
+      const vv = this.vista(q.rol, q.id, r.c, JSON.parse(r.j));
+      if (vv !== null) ch[r.c].push({ s: r.s, r: vv });
     }
     const com = this.get("comision");
     return J({ ok: true, seq: +this.get("seq") || 0, ch, del, rej, cfg: { comision: com === null ? 10 : +com }, me: q });
