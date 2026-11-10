@@ -1,5 +1,5 @@
 // Sube VERSION en cada cambio visible para que los celulares con la app instalada se actualicen.
-const VERSION = 'ecj-v0.11.0';
+const VERSION = 'ecj-v0.12.0';
 const ASSETS = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
